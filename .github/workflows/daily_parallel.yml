@@ -1,0 +1,107 @@
+name: 採用HP企業リスト 毎日自動更新【並列版】
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # 毎日 日本時間 09:00
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: '並列数（デフォルト10）'
+        required: false
+        default: '10'
+      batch:
+        description: '1回の処理件数（デフォルト2000）'
+        required: false
+        default: '2000'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350   # 最大5時間50分（GitHub Actions上限）
+
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: ライブラリインストール
+        run: pip install requests beautifulsoup4 pandas google-api-python-client google-auth
+
+      # ---- 前回の処理済みDB・CSVを復元 ----
+      - name: キャッシュ復元
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            processed.json
+            companies.csv
+          key: recruit-data-${{ github.run_number }}
+          restore-keys: recruit-data-
+
+      # ---- 国税庁ZIP（月初のみ更新） ----
+      - name: 月次日付取得
+        id: date
+        run: echo "month=$(date +%Y-%m)" >> $GITHUB_OUTPUT
+
+      - name: 国税庁ZIPキャッシュ確認
+        id: zip-cache
+        uses: actions/cache@v4
+        with:
+          path: houjin_data/
+          key: houjin-zip-${{ steps.date.outputs.month }}
+
+      - name: 国税庁ZIPダウンロード・解凍（月1回のみ）
+        if: steps.zip-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p houjin_data
+          if [ -n "${{ secrets.HOUJIN_CSV_URL }}" ]; then
+            echo "CSVダウンロード中..."
+            curl -L "${{ secrets.HOUJIN_CSV_URL }}" -o houjin_data/houjin.zip
+            cd houjin_data && unzip -o houjin.zip && rm houjin.zip
+            echo "✅ 国税庁CSV更新完了"
+          else
+            echo "⚠️ HOUJIN_CSV_URL未設定 → ZIPを直接配置してください"
+          fi
+
+      - name: CSVをワーキングディレクトリにコピー
+        run: |
+          if ls houjin_data/*.csv 1> /dev/null 2>&1; then
+            cp houjin_data/*.csv .
+            echo "✅ CSVコピー完了"
+          fi
+
+      # ---- メイン処理 ----
+      - name: credentials.json を作成
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+
+      - name: 採用HP確認（並列処理）
+        run: |
+          WORKERS=${{ github.event.inputs.workers || '10' }}
+          BATCH=${{ github.event.inputs.batch || '2000' }}
+          python collect_parallel.py --workers $WORKERS --batch $BATCH
+
+      - name: Googleスプレッドシートに書き込み
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        run: python upload.py
+
+      # ---- 保存 ----
+      - name: キャッシュ保存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            processed.json
+            companies.csv
+          key: recruit-data-${{ github.run_number }}
+
+      - name: CSVアーティファクト保存
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: companies-${{ github.run_number }}
+          path: companies.csv
+          retention-days: 30
