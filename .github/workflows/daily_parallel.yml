@@ -93,7 +93,12 @@ jobs:
         if: always()
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-        run: python upload.py
+        run: |
+          if [ -f companies.csv ]; then
+            python upload.py
+          else
+            echo "companies.csvがないためスキップ"
+          fi
 
       - name: キャッシュ保存
         if: always()
