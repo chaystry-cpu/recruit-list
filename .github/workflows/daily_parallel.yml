@@ -29,7 +29,7 @@ jobs:
           python-version: "3.11"
 
       - name: ライブラリインストール
-        run: pip install requests beautifulsoup4 pandas google-api-python-client google-auth
+        run: pip install requests beautifulsoup4 pandas google-api-python-client google-auth gdown
 
       - name: キャッシュ復元
         uses: actions/cache/restore@v4
@@ -55,27 +55,18 @@ jobs:
         if: steps.zip-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p houjin_data
-          FILE_ID=$(echo "${{ secrets.HOUJIN_CSV_URL }}" | grep -oP '(?<=/d/)[^/]+')
-          if [ -z "$FILE_ID" ]; then
-            FILE_ID=$(echo "${{ secrets.HOUJIN_CSV_URL }}" | grep -oP '(?<=id=)[^&]+')
-          fi
-          if [ -n "$FILE_ID" ]; then
-            echo "Google Drive ID: $FILE_ID"
-            pip install gdown -q
-            gdown "https://drive.google.com/uc?id=${FILE_ID}" -O houjin_data/houjin.zip --fuzzy
-            cd houjin_data && unzip -o houjin.zip && rm -f houjin.zip
-            echo "✅ 国税庁CSV更新完了"
-            ls -la
-          else
-            echo "⚠️ URLからIDを取得できませんでした"
-          fi
+          echo "ダウンロード開始..."
+          gdown "${{ secrets.HOUJIN_CSV_URL }}" -O houjin_data/houjin.zip --fuzzy
+          echo "解凍中..."
+          cd houjin_data && unzip -o houjin.zip && rm -f houjin.zip
+          echo "✅ 完了"
+          ls -la
 
       - name: CSVをワーキングディレクトリにコピー
         run: |
           if ls houjin_data/*.csv 1> /dev/null 2>&1; then
             cp houjin_data/*.csv .
             echo "✅ CSVコピー完了"
-            ls *.csv
           else
             echo "⚠️ CSVファイルが見つかりません"
           fi
