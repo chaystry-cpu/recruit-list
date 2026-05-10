@@ -46,6 +46,14 @@ def ensure_sheet(sheets):
 
 
 def upload():
+    # CSVが存在しない・空の場合はスキップ
+    if not os.path.exists(INPUT_CSV):
+        print("[INFO] companies.csv が見つかりません。スキップします。")
+        return
+    if os.path.getsize(INPUT_CSV) == 0:
+        print("[INFO] companies.csv が空です。スキップします。")
+        return
+
     print("[INFO] Googleスプレッドシートに書き込み中...")
 
     service = get_service()
