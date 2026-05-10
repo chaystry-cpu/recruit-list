@@ -56,7 +56,7 @@ jobs:
         run: |
           mkdir -p houjin_data
           echo "ダウンロード開始..."
-          gdown "${{ secrets.HOUJIN_CSV_URL }}" -O houjin_data/houjin.zip --fuzzy
+          gdown "https://drive.google.com/uc?id=1jm31pn9OV982eaqG1xrrHji7JxgNxClC" -O houjin_data/houjin.zip
           echo "解凍中..."
           cd houjin_data && unzip -o houjin.zip && rm -f houjin.zip
           echo "✅ 完了"
