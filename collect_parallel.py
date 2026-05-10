@@ -33,7 +33,7 @@ OUTPUT_CSV        = "companies.csv"
 # ================================================
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-TIMEOUT = 8  # タイムアウト（秒）
+TIMEOUT = 8
 
 RECRUIT_URL_KW  = ["recruit","career","careers","採用","join","jobs","job",
                     "employ","hiring","saiyo","saiyou","entry","work-with-us"]
@@ -43,7 +43,6 @@ RECRUIT_TEXT_KW = ["採用情報","採用サイト","キャリア採用","募集
 FIELDNAMES = ["社名","社名カナ","法人番号","都道府県","市区町村","郵便番号",
               "企業HP","採用HP有無","採用ページURL","代表電話番号","確認日"]
 
-# スレッドセーフなロック
 csv_lock = Lock()
 db_lock  = Lock()
 counter  = {"done": 0, "recruit": 0, "error": 0}
@@ -52,14 +51,12 @@ cnt_lock = Lock()
 
 # ========== CSVロード ==========
 def load_companies():
-    # ZIPから直接読み込み対応
     import zipfile
     zip_files = glob.glob("*.zip") + glob.glob("/mnt/user-data/uploads/*.zip")
     csv_files = glob.glob("*.csv") + glob.glob("houjin*.csv") + glob.glob("00_*.csv")
 
     dfs = []
 
-    # ZIPがあればそこから
     for zf in zip_files:
         try:
             with zipfile.ZipFile(zf) as z:
@@ -77,9 +74,11 @@ def load_companies():
         except Exception as e:
             print(f"[WARN] ZIP読み込み失敗: {e}")
 
-    # 通常CSVも確認
     if not dfs:
         for cf in csv_files:
+            # companies.csvは除外（出力ファイルなので）
+            if cf == "companies.csv":
+                continue
             for enc in ["cp932","utf-8","shift-jis"]:
                 try:
                     df = pd.read_csv(cf, encoding=enc, header=None,
@@ -92,34 +91,52 @@ def load_companies():
         print("[ERROR] 国税庁CSVが見つかりません")
         return pd.DataFrame()
 
-    df = pd.concat(dfs, ignore_index=True).rename(columns={
-        1:"法人番号", 5:"社名", 6:"社名_旧", 7:"社名カナ_旧",
-        # 実際の列マッピング（国税庁フォーマット）
-    })
+    # 全データを結合（renameは使わない）
+    df = pd.concat(dfs, ignore_index=True)
 
-    # 正しい列マッピング（インデックスベース）
-    col_map = {1:"法人番号", 6:"社名", 28:"社名カナ", 9:"都道府県",
-               10:"市区町村", 11:"所在地詳細", 15:"郵便番号", 2:"処理区分"}
+    # 列インデックスで直接取得
+    # 国税庁CSVフォーマット:
+    # 0:連番, 1:法人番号, 2:処理区分, 3:訂正区分, 4:変更年月日,
+    # 5:変更事由, 6:社名, 7:社名かな, 8:エン名, 9:都道府県,
+    # 10:市区町村, 11:丁目番地, 15:郵便番号, 28:社名カナ
+    col_map = {
+        1: "法人番号",
+        2: "処理区分",
+        6: "社名",
+        28: "社名カナ",
+        9: "都道府県",
+        10: "市区町村",
+        11: "所在地詳細",
+        15: "郵便番号",
+    }
+
     df2 = pd.DataFrame()
     for idx, name in col_map.items():
         if idx in df.columns:
-            df2[name] = df[idx]
+            df2[name] = df[idx].astype(str)
+        else:
+            print(f"[WARN] 列{idx}({name})が見つかりません")
+            df2[name] = ""
 
-    if df2.empty:
+    if df2.empty or "社名" not in df2.columns:
         print("[ERROR] 列マッピング失敗")
         return pd.DataFrame()
 
-    # 廃業除外
+    print(f"[INFO] 読み込み完了: {len(df2):,}社")
+
+    # 廃業除外（処理区分=4）
     if "処理区分" in df2.columns:
+        before = len(df2)
         df2 = df2[df2["処理区分"] != "4"]
+        print(f"[INFO] 廃業除外: {before-len(df2):,}社除外 → {len(df2):,}社")
 
     # 都道府県フィルタ
-    if TARGET_PREFECTURE and "都道府県" in df2.columns:
+    if TARGET_PREFECTURE:
         df2 = df2[df2["都道府県"].str.contains(TARGET_PREFECTURE, na=False)]
         print(f"[INFO] {TARGET_PREFECTURE}絞り込み: {len(df2):,}件")
 
     # 業種キーワードフィルタ
-    if TARGET_KEYWORDS and "社名" in df2.columns:
+    if TARGET_KEYWORDS:
         pat = "|".join(TARGET_KEYWORDS)
         mask = df2["社名"].str.contains(pat, na=False, case=False)
         if "社名カナ" in df2.columns:
@@ -178,7 +195,6 @@ def analyze(url: str) -> dict:
         soup = BeautifulSoup(res.text, "html.parser")
         text = soup.get_text()
 
-        # 電話番号抽出
         for pat in [r'0\d{1,4}[-－（\(]\d{1,4}[-－）\)]\d{3,4}',
                     r'TEL[：:\s]*([0-9\-０-９]{10,})',
                     r'電話[番号]*[：:\s]*([0-9\-０-９]{10,})']:
@@ -190,7 +206,6 @@ def analyze(url: str) -> dict:
                     out["phone"] = phone
                     break
 
-        # 採用ページ検出
         for a in soup.find_all("a", href=True):
             href = a.get("href","")
             txt  = a.get_text(strip=True)
@@ -200,7 +215,6 @@ def analyze(url: str) -> dict:
                 out["recruit_url"] = urljoin(url, href)
                 return out
 
-        # サブパス確認
         for path in ["/recruit","/careers","/career","/採用","/jobs","/saiyo"]:
             try:
                 r2 = requests.head(urljoin(url, path), headers=HEADERS,
@@ -214,7 +228,7 @@ def analyze(url: str) -> dict:
     return out
 
 
-# ========== 1社処理（並列から呼ばれる） ==========
+# ========== 1社処理 ==========
 def process_one(row_data: tuple) -> dict | None:
     idx, name, corp_id, pref, city, postal, kana = row_data
     try:
@@ -241,7 +255,7 @@ def process_one(row_data: tuple) -> dict | None:
         return None
 
 
-# ========== CSV追記（スレッドセーフ） ==========
+# ========== CSV追記 ==========
 def append_rows(rows: list):
     if not rows: return
     exists = os.path.exists(OUTPUT_CSV)
@@ -264,7 +278,6 @@ def print_progress(total: int, start_time: float):
     bar_len = 30
     filled  = int(bar_len * done / total) if total > 0 else 0
     bar     = "█" * filled + "░" * (bar_len - filled)
-
     print(f"\r[{bar}] {pct:.1f}% | {done:,}/{total:,}社 | "
           f"採用HPあり:{recruit:,} | "
           f"{rate:.1f}社/秒 | 残り約{eta_min}分  ", end="", flush=True)
@@ -292,7 +305,6 @@ def main():
     db = load_db()
     print(f"[INFO] 処理済み: {len(db):,}社")
 
-    # 未処理を抽出
     unprocessed = []
     for _, row in df.iterrows():
         cid = str(row.get("法人番号","")).strip()
@@ -313,7 +325,6 @@ def main():
 
     print(f"[INFO] 未処理: {len(unprocessed):,}社 → 今回: {total:,}社 ({workers}並列)\n")
 
-    # バッファ（50件溜まったらまとめてCSV書き込み）
     buffer   = []
     db_patch = {}
     FLUSH    = 50
@@ -339,7 +350,6 @@ def main():
                     "recruit": result["_has_recruit"],
                 }
 
-            # バッファが溜まったら書き込み
             if len(buffer) >= FLUSH:
                 append_rows(buffer)
                 db.update(db_patch)
@@ -349,7 +359,6 @@ def main():
 
             print_progress(total, start_time)
 
-    # 残りをフラッシュ
     if buffer:
         append_rows(buffer)
         db.update(db_patch)
